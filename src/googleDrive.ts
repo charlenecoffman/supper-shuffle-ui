@@ -1,4 +1,4 @@
-import { DEFAULT_THEMES } from "./uiLogic";
+import { DEFAULT_THEMES, parseStoredGoogleSession } from "./uiLogic";
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.appdata";
 const DRIVE_API = "https://www.googleapis.com/drive/v3/files";
@@ -6,6 +6,7 @@ const DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files";
 const DATA_FILE_NAME = "supper-shuffle-data.json";
 const DATA_FILE_STORAGE_KEY = "supper-shuffle-appdata-file-id";
 const LEGACY_SPREADSHEET_STORAGE_KEY = "supper-shuffle-spreadsheet-id";
+const GOOGLE_SESSION_STORAGE_KEY = "supper-shuffle-google-session";
 
 type TokenResponse = {
   access_token?: string;
@@ -59,6 +60,7 @@ let dataFileId = "";
 let dataCache: AppData | null = null;
 let tokenClient: TokenClient | null = null;
 let mutationQueue: Promise<void> = Promise.resolve();
+let restorePromise: Promise<boolean> | null = null;
 const expiredListeners = new Set<() => void>();
 
 function clientId() {
@@ -81,7 +83,40 @@ function expireAuthorization() {
   expiresAt = 0;
   dataFileId = "";
   dataCache = null;
+  clearStoredAuthorization();
   expiredListeners.forEach((listener) => listener());
+}
+
+function storeAuthorization() {
+  try {
+    sessionStorage.setItem(GOOGLE_SESSION_STORAGE_KEY, JSON.stringify({ accessToken, expiresAt }));
+  } catch {
+    // The in-memory session remains usable when browser storage is unavailable.
+  }
+}
+
+function clearStoredAuthorization() {
+  try {
+    sessionStorage.removeItem(GOOGLE_SESSION_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in restrictive browser modes.
+  }
+}
+
+function restoreStoredAuthorization() {
+  try {
+    const stored = parseStoredGoogleSession(sessionStorage.getItem(GOOGLE_SESSION_STORAGE_KEY));
+    if (!stored) {
+      clearStoredAuthorization();
+      return false;
+    }
+    accessToken = stored.accessToken;
+    expiresAt = stored.expiresAt;
+    return true;
+  } catch {
+    clearStoredAuthorization();
+    return false;
+  }
 }
 
 function loadGoogleIdentityServices() {
@@ -117,6 +152,7 @@ export async function connectGoogle() {
         if (!response.access_token) return reject(new Error(response.error_description || response.error || "Google authorization was not completed."));
         accessToken = response.access_token;
         expiresAt = Date.now() + Math.max(0, Number(response.expires_in || 3600) - 30) * 1000;
+        storeAuthorization();
         void ensureUserDataFile().then((fileId) => resolve({ dataFileId: fileId })).catch(reject);
       },
       error_callback: () => reject(new Error("The Google authorization window was closed.")),
@@ -125,11 +161,29 @@ export async function connectGoogle() {
   });
 }
 
+export function restoreGoogleSession() {
+  if (restorePromise) return restorePromise;
+  restorePromise = (async () => {
+    if (!restoreStoredAuthorization()) return false;
+    try {
+      await ensureUserDataFile();
+      return true;
+    } catch {
+      expireAuthorization();
+      return false;
+    }
+  })().finally(() => {
+    restorePromise = null;
+  });
+  return restorePromise;
+}
+
 export function disconnectGoogle() {
   accessToken = "";
   expiresAt = 0;
   dataFileId = "";
   dataCache = null;
+  clearStoredAuthorization();
 }
 
 function requireAuthorization() {
@@ -380,6 +434,15 @@ async function mutateApi<T>(method: string, url: URL, parts: string[], options: 
     if (!data.themes.some((item) => canonical(item) === canonical(theme))) data.themes.push(theme);
     await writeData(data);
     return { meal: mealDetail(data, id), count: data.meals.length } as T;
+  }
+  if (method === "DELETE" && parts.length === 3 && parts[0] === "api" && parts[1] === "meals") {
+    const mealIndex = data.meals.findIndex((item) => item.id === parts[2]);
+    if (mealIndex < 0) throw new Error("Meal not found.");
+    data.meals.splice(mealIndex, 1);
+    data.ingredients = data.ingredients.filter((item) => item.mealId !== parts[2]);
+    data.history = data.history.filter((item) => item.mealId !== parts[2]);
+    await writeData(data);
+    return { ok: true, id: parts[2], count: data.meals.length } as T;
   }
   if (method === "PATCH" && parts.length === 3 && parts[0] === "api" && parts[1] === "meals") {
     const meal = data.meals.find((item) => item.id === parts[2]);

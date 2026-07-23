@@ -1,7 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { connectGoogle, googleApi as api, isGoogleConfigured, onGoogleAuthorizationExpired } from "./googleDrive";
+import { connectGoogle, googleApi as api, isGoogleConfigured, onGoogleAuthorizationExpired, restoreGoogleSession } from "./googleDrive";
 import { buildShoppingListPdf } from "./shoppingPdf";
-import { filterThemeOptions, rankPantryItems, shouldCloseFromBackdrop } from "./uiLogic";
+import { filterThemeOptions, mergeThemeOptions, rankPantryItems, shouldCloseFromBackdrop } from "./uiLogic";
 
 type Meal = { id: string; name: string; theme: string; lastOrdered?: string };
 type MealDetail = Meal & { ingredients: string[] };
@@ -18,7 +18,6 @@ const emojiByTheme: Record<string, string> = {
   American: "🍔",
   British: "🥧",
   Mediterranean: "🫓",
-  Boring: "🍗",
 };
 
 function mealKey(name: string) {
@@ -133,6 +132,7 @@ function ThemeCombobox({ value, onChange, options, name, compact = false }: Them
 export default function App() {
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [restoringSession, setRestoringSession] = useState(true);
   const [connectionError, setConnectionError] = useState("");
   const [session, setSession] = useState(0);
 
@@ -140,6 +140,18 @@ export default function App() {
     setConnected(false);
     setConnectionError("Your Google connection expired. Reconnect to keep shuffling.");
   }), []);
+
+  useEffect(() => {
+    let active = true;
+    void restoreGoogleSession().then((restored) => {
+      if (!active) return;
+      setConnected(restored);
+      setRestoringSession(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function handleConnect() {
     setConnecting(true);
@@ -164,12 +176,12 @@ export default function App() {
         <p className="eyebrow">SUPPER SHUFFLE</p>
         <h1>Your meals,<br />in your Drive.</h1>
         <p className="google-connect-copy">Connect Google to create or reopen your private Supper Shuffle data. It stays hidden in your Google Drive app storage and is only accessible to Supper Shuffle.</p>
-        <button className="google-connect-button" onClick={() => void handleConnect()} disabled={connecting || !isGoogleConfigured()}>
-          <span aria-hidden="true">G</span>{connecting ? "Connecting…" : "Continue with Google"}
+        <button className="google-connect-button" onClick={() => void handleConnect()} disabled={restoringSession || connecting || !isGoogleConfigured()}>
+          <span aria-hidden="true">G</span>{restoringSession ? "Restoring session…" : connecting ? "Connecting…" : "Continue with Google"}
         </button>
         {!isGoogleConfigured() && <p className="google-connect-error">Google sign-in needs a web client ID before it can be used.</p>}
         {connectionError && <p className="google-connect-error" role="alert">{connectionError}</p>}
-        <p className="google-connect-note">Access tokens stay in this browser tab and are never saved.</p>
+        <p className="google-connect-note">Google access is kept only for this browser tab and expires automatically.</p>
       </section>
     </main>
   );
@@ -182,6 +194,8 @@ function Home() {
   const [weekStart, setWeekStart] = useState("");
   const [shopping, setShopping] = useState<ShoppingItem[]>([]);
   const [pantryCheckExcludedKeys, setPantryCheckExcludedKeys] = useState<Set<string>>(new Set());
+  const [pantryCheckLeavingKeys, setPantryCheckLeavingKeys] = useState<Set<string>>(new Set());
+  const [pantryCheckEnteringKey, setPantryCheckEnteringKey] = useState("");
   const [essentials, setEssentials] = useState<Essential[]>([]);
   const [newEssentialName, setNewEssentialName] = useState("");
   const [addingEssential, setAddingEssential] = useState(false);
@@ -201,6 +215,9 @@ function Home() {
   const [savingMealName, setSavingMealName] = useState(false);
   const [mealDialogOpen, setMealDialogOpen] = useState(false);
   const [addMealOpen, setAddMealOpen] = useState(false);
+  const [mealPendingDelete, setMealPendingDelete] = useState<Meal | null>(null);
+  const [deletingMeal, setDeletingMeal] = useState(false);
+  const [deleteMealError, setDeleteMealError] = useState("");
   const [ingredientInput, setIngredientInput] = useState("");
   const [ingredientMessage, setIngredientMessage] = useState("");
   const [pendingIngredients, setPendingIngredients] = useState<Set<string>>(new Set());
@@ -211,15 +228,20 @@ function Home() {
   const [newMealTheme, setNewMealTheme] = useState("");
   const mealDialogRef = useRef<HTMLDialogElement>(null);
   const addMealDialogRef = useRef<HTMLDialogElement>(null);
+  const deleteMealDialogRef = useRef<HTMLDialogElement>(null);
   const mealBackdropPressRef = useRef(false);
   const addMealBackdropPressRef = useRef(false);
+  const deleteMealBackdropPressRef = useRef(false);
   const ingredientInputRef = useRef<HTMLInputElement>(null);
   const ingredientFormRef = useRef<HTMLFormElement>(null);
+  const pantryCheckTimersRef = useRef<Map<string, number[]>>(new Map());
+  const previousPantryCheckKeysRef = useRef<string[] | null>(null);
+  const pantryCheckEntranceTimerRef = useRef<number | null>(null);
   const plannedKeys = useMemo(() => new Set(planned.map((meal) => mealKey(meal.name))), [planned]);
   const themes = useMemo(() => [...new Set(meals.map((meal) => meal.theme))].sort(), [meals]);
   const suggestedThemes = useMemo(
-    () => savedThemes.filter((item) => !["boring", "american/mexican/italian"].includes(mealKey(item))).sort(),
-    [savedThemes],
+    () => mergeThemeOptions(savedThemes, meals.map((meal) => meal.theme)),
+    [meals, savedThemes],
   );
   const visibleMeals = useMemo(
     () => meals.filter((meal) => (theme === "All meals" || meal.theme === theme) && meal.name.toLocaleLowerCase().includes(mealSearch.trim().toLocaleLowerCase())),
@@ -232,6 +254,25 @@ function Home() {
   const frequentEssentials = useMemo(() => {
     return rankPantryItems(essentials.filter((item) => !pantryCheckExcludedKeys.has(canonical(item.name))), 5);
   }, [essentials, pantryCheckExcludedKeys]);
+
+  useEffect(() => {
+    const currentKeys = frequentEssentials.map((item) => canonical(item.name));
+    const previousKeys = previousPantryCheckKeysRef.current;
+    const enteringKey = previousKeys && currentKeys.find((key) => !previousKeys.includes(key));
+    previousPantryCheckKeysRef.current = currentKeys;
+    if (!enteringKey) return;
+    setPantryCheckEnteringKey(enteringKey);
+    if (pantryCheckEntranceTimerRef.current) window.clearTimeout(pantryCheckEntranceTimerRef.current);
+    pantryCheckEntranceTimerRef.current = window.setTimeout(() => {
+      setPantryCheckEnteringKey("");
+      pantryCheckEntranceTimerRef.current = null;
+    }, 650);
+  }, [frequentEssentials]);
+
+  useEffect(() => () => {
+    pantryCheckTimersRef.current.forEach((timers) => timers.forEach((timer) => window.clearTimeout(timer)));
+    if (pantryCheckEntranceTimerRef.current) window.clearTimeout(pantryCheckEntranceTimerRef.current);
+  }, []);
 
   useEffect(() => {
     void Promise.all([api<{ meals: Meal[]; themes: string[] }>("/api/meals"), api<WeekPayload>("/api/week")])
@@ -259,13 +300,20 @@ function Home() {
   }, [addMealOpen]);
 
   useEffect(() => {
-    if (!mealDialogOpen && !addMealOpen) return;
+    const dialog = deleteMealDialogRef.current;
+    if (!dialog) return;
+    if (mealPendingDelete && !dialog.open) dialog.showModal();
+    if (!mealPendingDelete && dialog.open) dialog.close();
+  }, [mealPendingDelete]);
+
+  useEffect(() => {
+    if (!mealDialogOpen && !addMealOpen && !mealPendingDelete) return;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [mealDialogOpen, addMealOpen]);
+  }, [mealDialogOpen, addMealOpen, mealPendingDelete]);
 
   function applyWeek(week: WeekPayload) {
     setWeekStart(week.weekStart);
@@ -355,6 +403,42 @@ function Home() {
       setMeals(data.meals);
     } catch {
       // Existing labels remain usable if this background refresh fails.
+    }
+  }
+
+  function requestDeleteMeal(meal: Meal) {
+    setDeleteMealError("");
+    setMealPendingDelete(meal);
+  }
+
+  function closeDeleteMeal() {
+    if (deletingMeal) return;
+    setDeleteMealError("");
+    setMealPendingDelete(null);
+  }
+
+  async function confirmDeleteMeal() {
+    const meal = mealPendingDelete;
+    if (!meal || deletingMeal) return;
+    setDeletingMeal(true);
+    setDeleteMealError("");
+    setWeekMessage({ text: `Deleting ${meal.name}…` });
+    try {
+      await api(`/api/meals/${encodeURIComponent(meal.id)}`, { method: "DELETE" });
+      setMeals((current) => current.filter((item) => item.id !== meal.id));
+      setPlanned((current) => current.filter((item) => item.id !== meal.id));
+      if (activeMeal?.id === meal.id) {
+        setMealDialogOpen(false);
+        setActiveMeal(null);
+      }
+      setMealPendingDelete(null);
+      setWeekMessage({ text: `${meal.name} deleted.` });
+    } catch (error) {
+      const message = (error as Error).message;
+      setDeleteMealError(message);
+      setWeekMessage({ text: message, error: true });
+    } finally {
+      setDeletingMeal(false);
     }
   }
 
@@ -544,6 +628,19 @@ function Home() {
     setShoppingMessage({ text: `Removing ${item.ingredient}…` });
     try {
       await api(`/api/shopping-list/${encodeURIComponent(item.ingredient)}`, { method: "DELETE" });
+      const key = canonical(item.ingredient);
+      pantryCheckTimersRef.current.get(key)?.forEach((timer) => window.clearTimeout(timer));
+      pantryCheckTimersRef.current.delete(key);
+      setPantryCheckLeavingKeys((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+      setPantryCheckExcludedKeys((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
       if (!item.meals.length) setEssentials((current) => current.map((essential) => canonical(essential.name) === canonical(item.ingredient) ? { ...essential, orderCount: Math.max(0, (essential.orderCount || 0) - 1) } : essential));
       setShoppingMessage({ text: "Removed from this week's shopping list." });
     } catch (error) {
@@ -564,12 +661,55 @@ function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ quantity: item.quantity }),
       });
-      setEssentials((current) => current.map((item) => canonical(item.name) === canonical(essential.name) ? { ...item, orderCount: (item.orderCount || 0) + 1 } : item));
+      if (view === "week") schedulePantryCheckExit(essential.name);
+      else incrementEssentialOrderCount(essential.name);
       setMessage({ text: `${essential.name} added to this week's list.` });
     } catch (error) {
+      cancelPantryCheckExit(essential.name);
       setShopping((current) => current.filter((entry) => entry.id !== item.id));
       setMessage({ text: (error as Error).message, error: true });
     }
+  }
+
+  function schedulePantryCheckExit(name: string) {
+    const key = canonical(name);
+    cancelPantryCheckExit(name);
+    const leaveTimer = window.setTimeout(() => {
+      setPantryCheckLeavingKeys((current) => new Set(current).add(key));
+    }, 1200);
+    const replaceTimer = window.setTimeout(() => {
+      setPantryCheckExcludedKeys((current) => new Set(current).add(key));
+      incrementEssentialOrderCount(name);
+      setPantryCheckLeavingKeys((current) => {
+        const next = new Set(current);
+        next.delete(key);
+        return next;
+      });
+      pantryCheckTimersRef.current.delete(key);
+    }, 1650);
+    pantryCheckTimersRef.current.set(key, [leaveTimer, replaceTimer]);
+  }
+
+  function incrementEssentialOrderCount(name: string) {
+    setEssentials((current) => current.map((item) => canonical(item.name) === canonical(name) ? { ...item, orderCount: (item.orderCount || 0) + 1 } : item));
+  }
+
+  function cancelPantryCheckExit(name: string) {
+    const key = canonical(name);
+    pantryCheckTimersRef.current.get(key)?.forEach((timer) => window.clearTimeout(timer));
+    pantryCheckTimersRef.current.delete(key);
+    setPantryCheckExcludedKeys((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+    setPantryCheckLeavingKeys((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
   }
 
   async function createEssential(event: FormEvent<HTMLFormElement>) {
@@ -636,17 +776,17 @@ function Home() {
                 {planned.length ? planned.map((meal) => <div className="week-item" key={mealKey(meal.name)}><p>{meal.name}</p><button onClick={() => void removeMealFromWeek(meal)} aria-label={`Remove ${meal.name}`}>×</button></div>) : <div className="week-empty"><strong>No dinners planned yet</strong><span>Add one from your meal library below.</span></div>}
               </div>
               <p className={`week-message ${weekMessage.error ? "error" : ""}`} role="status">{weekMessage.text}</p>
-              <div className="plan-button">Meal weeks begin on Saturday</div>
+              <button type="button" className="plan-button" onClick={() => changeView("week")}>View my week &amp; shopping list <span aria-hidden="true">→</span></button>
             </div>
           </section>
 
           <section className="library">
-            <div className="library-heading"><div><p className="eyebrow">{loading ? "LOADING RECIPES" : `${meals.length} RECIPES`}</p><h2>Find a meal</h2></div><div className="library-actions"><button className="add-meal-button" onClick={() => { setAddMealError(""); setNewMealName(""); setNewMealTheme(""); setAddMealOpen(true); }}>+ Add Meal</button><label className="search"><span aria-hidden="true">⌕</span><input value={mealSearch} onChange={(event) => setMealSearch(event.target.value)} placeholder="Search your meals…" aria-label="Search meals" /></label></div></div>
+            <div className="library-heading"><div><p className="eyebrow">{loading ? "LOADING RECIPES" : `${meals.length} RECIPES`}</p><h2>Find a meal</h2></div><div className="library-actions"><button className="add-meal-button" onClick={() => { setAddMealError(""); setNewMealName(""); setNewMealTheme(""); setAddMealOpen(true); }}>+ Create Meal</button><label className="search"><span aria-hidden="true">⌕</span><input value={mealSearch} onChange={(event) => setMealSearch(event.target.value)} placeholder="Search your meals…" aria-label="Search meals" /></label></div></div>
             <div className="filters" aria-label="Filter meals by theme"><button className={theme === "All meals" ? "selected" : ""} onClick={() => setTheme("All meals")}>All meals</button>{themes.map((item) => <button className={theme === item ? "selected" : ""} onClick={() => setTheme(item)} key={item}>{item}</button>)}</div>
             <div className="meal-grid" aria-live="polite">
               {visibleMeals.map((meal, index) => {
                 const added = plannedKeys.has(mealKey(meal.name));
-                return <article className={`meal-card color-${index % 5}`} key={meal.id} tabIndex={0} role="button" aria-label={`View ingredients for ${meal.name}`} onClick={() => void openMeal(meal)} onKeyDown={(event) => handleCardKey(event, () => void openMeal(meal))}><div className="meal-art" aria-hidden="true"><span>{emojiByTheme[meal.theme] || "🍽️"}</span></div><div className="meal-info"><p>{meal.theme}</p><h3>{meal.name}</h3><button className={added ? "added" : ""} onClick={(event) => { event.stopPropagation(); void (added ? removeMealFromWeek(meal) : addMealToWeek(meal)); }}>{added ? "✓ On this week" : "+ Add to week"}</button><span className="last-ordered">Last Ordered: <strong>{meal.lastOrdered || "Never"}</strong></span><span className="view-recipe">View ingredients →</span></div></article>;
+                return <article className={`meal-card color-${index % 5}`} key={meal.id} tabIndex={0} role="button" aria-label={`View ingredients for ${meal.name}`} onClick={() => void openMeal(meal)} onKeyDown={(event) => handleCardKey(event, () => void openMeal(meal))}><div className="meal-art" aria-hidden="true"><span>{emojiByTheme[meal.theme] || "🍽️"}</span></div><div className="meal-info"><p>{meal.theme}</p><h3>{meal.name}</h3><button className={added ? "added" : ""} onClick={(event) => { event.stopPropagation(); void (added ? removeMealFromWeek(meal) : addMealToWeek(meal)); }}>{added ? "✓ On this week" : "+ Add to week"}</button>{meal.lastOrdered && <span className="last-ordered">Last Ordered: <strong>{meal.lastOrdered}</strong></span>}<div className="meal-card-footer"><span className="view-recipe">View ingredients →</span><button type="button" className="meal-delete-button" onClick={(event) => { event.stopPropagation(); requestDeleteMeal(meal); }} aria-label={`Delete ${meal.name}`}>Delete</button></div></div></article>;
               })}
               {!visibleMeals.length && <p className="no-results">No dinners found. Try another search.</p>}
             </div>
@@ -654,10 +794,10 @@ function Home() {
         </main>
       ) : view === "week" ? (
         <main className="my-week-page">
-          <div className="my-week-heading"><div><h1>My week</h1><p>Week of {formatWeek(weekStart)}</p></div><button className="back-to-meals" onClick={() => changeView("meals")}>+ Add another meal</button></div>
+          <div className="my-week-heading"><h1>My week</h1><p className="my-week-heading-date">Week of {formatWeek(weekStart)}</p><button className="back-to-meals" onClick={() => changeView("meals")}>← Go back to add more meals</button></div>
           <div className="my-week-layout">
             <aside className="planned-panel"><div className="panel-heading"><div><p className="eyebrow">DINNERS</p><h2>On the menu</h2></div><span>{planned.length}</span></div><div className="planned-meal-list">{planned.length ? planned.map((meal, index) => <div className="planned-meal" key={mealKey(meal.name)}><span>{index + 1}</span><div><p>{meal.theme}</p><strong>{meal.name}</strong></div><button onClick={() => void removeMealFromWeek(meal)} aria-label={`Remove ${meal.name}`}>×</button></div>) : <div className="week-page-empty"><strong>No meals selected yet</strong><span>Head back to Meals to start planning.</span></div>}</div></aside>
-            <section className="shopping-panel"><div className="panel-heading"><div><p className="eyebrow">SHOPPING LIST</p><h2>Everything you need</h2><p className="shopping-count-copy">{shopping.length} {shopping.length === 1 ? "item" : "items"} in cart</p></div><div className="shopping-heading-actions"><button className="shopping-icon-button print-button" onClick={printShoppingList} aria-label="Print shopping list" title="Print shopping list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M7 14h10v7H7z" /></svg></button><button className="shopping-icon-button download-button" onClick={downloadShoppingList} aria-label="Download shopping list as PDF" title="Download PDF"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 20h16" /></svg></button></div></div><div className="pantry-check"><div className="pantry-check-heading"><div><p className="eyebrow">PANTRY CHECK</p><p>Running low on something you usually keep around?</p></div><button type="button" className="pantry-manage-link" onClick={() => changeView("pantry")}>Go to My Pantry →</button></div><div className="pantry-quick-list">{frequentEssentials.length ? frequentEssentials.map((essential) => { const added = shopping.some((item) => canonical(item.ingredient) === canonical(essential.name)); return <div className="pantry-quick-item" key={essential.name}><span>{essential.name}</span><button type="button" className={added ? "added" : ""} disabled={added} onClick={() => void addEssential(essential)}>{added ? "On list" : "+ Add to list"}</button></div>; }) : <span className="pantry-quick-empty">Everything in your pantry is already on this week's list.</span>}</div></div><label className="shopping-search"><span aria-hidden="true">⌕</span><input type="search" value={shoppingSearch} onChange={(event) => setShoppingSearch(event.target.value)} placeholder="Search ingredients or meals…" aria-label="Search shopping list by ingredient or meal" /></label><div className="shopping-list" aria-live="polite">{visibleShopping.length ? visibleShopping.map((item) => <div className="shopping-item" key={item.id}><div className="shopping-copy"><strong>{item.ingredient}</strong><span>{item.meals.length ? item.meals.join(", ") : "Pantry essential"}</span></div><div className="shopping-quantity" aria-label={`Quantity ${item.quantity}`}><span>QTY</span><strong>{item.quantity}</strong></div><button onClick={() => void removeShoppingItem(item)}>Remove</button></div>) : <div className="week-page-empty shopping-empty"><strong>{shoppingSearch ? "No matches found" : "Your shopping list is empty"}</strong><span>{shoppingSearch ? "Try an ingredient or one of your meal names." : "Add a meal to automatically gather its ingredients."}</span></div>}</div><p className={`shopping-message ${shoppingMessage.error ? "error" : ""}`} role="status">{shoppingMessage.text}</p></section>
+            <section className="shopping-panel"><div className="panel-heading"><div><p className="eyebrow">SHOPPING LIST</p><h2>Everything you need</h2><p className="shopping-count-copy">{shopping.length} {shopping.length === 1 ? "item" : "items"} in cart</p></div><div className="shopping-heading-actions"><button className="shopping-icon-button print-button" onClick={printShoppingList} aria-label="Print shopping list" title="Print shopping list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M7 14h10v7H7z" /></svg></button><button className="shopping-icon-button download-button" onClick={downloadShoppingList} aria-label="Download shopping list as PDF" title="Download PDF"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 20h16" /></svg></button></div></div><div className="pantry-check"><div className="pantry-check-heading"><div><p className="eyebrow">PANTRY CHECK</p><p>Running low on something you usually keep around?</p></div><button type="button" className="pantry-manage-link" onClick={() => changeView("pantry")}>Go to My Pantry →</button></div><div className="pantry-quick-list" aria-live="polite">{frequentEssentials.length ? frequentEssentials.map((essential) => { const key = canonical(essential.name); const added = shopping.some((item) => canonical(item.ingredient) === key); const motionClass = pantryCheckLeavingKeys.has(key) ? " is-leaving" : pantryCheckEnteringKey === key ? " is-entering" : ""; return <div className={`pantry-quick-item${motionClass}`} key={essential.name}><span>{essential.name}</span><button type="button" className={added ? "added" : ""} disabled={added} onClick={() => void addEssential(essential)}>{added ? "On list" : "+ Add to list"}</button></div>; }) : <span className="pantry-quick-empty">Everything in your pantry is already on this week's list.</span>}</div></div><label className="shopping-search"><span aria-hidden="true">⌕</span><input type="search" value={shoppingSearch} onChange={(event) => setShoppingSearch(event.target.value)} placeholder="Search ingredients or meals…" aria-label="Search shopping list by ingredient or meal" /></label><div className="shopping-list" aria-live="polite">{visibleShopping.length ? visibleShopping.map((item) => <div className="shopping-item" key={item.id}><div className="shopping-copy"><strong>{item.ingredient}</strong><span>{item.meals.length ? item.meals.join(", ") : "Pantry essential"}</span></div><div className="shopping-quantity" aria-label={`Quantity ${item.quantity}`}><span>QTY</span><strong>{item.quantity}</strong></div><button onClick={() => void removeShoppingItem(item)}>Remove</button></div>) : <div className="week-page-empty shopping-empty"><strong>{shoppingSearch ? "No matches found" : "Your shopping list is empty"}</strong><span>{shoppingSearch ? "Try an ingredient or one of your meal names." : "Add a meal to automatically gather its ingredients."}</span></div>}</div><p className={`shopping-message ${shoppingMessage.error ? "error" : ""}`} role="status">{shoppingMessage.text}</p></section>
           </div>
         </main>
       ) : (
@@ -668,13 +808,15 @@ function Home() {
           </section>
           <section className="pantry-library">
             <div className="pantry-library-heading"><div><p className="eyebrow">YOUR STAPLES</p><h2>Things you keep around</h2></div><span>{essentials.length}</span></div>
-            <div className="pantry-grid" aria-live="polite">{essentials.length ? essentials.map((essential) => { const added = shopping.some((item) => canonical(item.ingredient) === canonical(essential.name)); return <article className="pantry-card" key={essential.name}><strong>{essential.name}</strong><div className="pantry-card-actions"><button type="button" className={added ? "added" : ""} disabled={added} onClick={() => void addEssential(essential)}>{added ? "On this week's list" : "+ Add to this week's list"}</button><button type="button" className="pantry-card-remove" onClick={() => void removeEssential(essential)}>Remove</button></div></article>; }) : <div className="pantry-empty"><strong>Your pantry is empty</strong><span>Add a staple above to get started.</span></div>}</div>
+            <div className="pantry-grid" aria-live="polite">{essentials.length ? essentials.map((essential) => { const added = shopping.some((item) => canonical(item.ingredient) === canonical(essential.name)); return <article className="pantry-card" key={essential.name}><strong>{essential.name}</strong><div className="pantry-card-actions"><button type="button" className={added ? "added" : ""} disabled={added} onClick={() => void addEssential(essential)}>{added ? "On this week's list" : "+ Add to this week's list"}</button><button type="button" className="pantry-card-remove" onClick={() => void removeEssential(essential)}>Remove from pantry</button></div></article>; }) : <div className="pantry-empty"><strong>Your pantry is empty</strong><span>Add a staple above to get started.</span></div>}</div>
             <p className={`pantry-message ${pantryMessage.error ? "error" : ""}`} role="status">{pantryMessage.text}</p>
           </section>
         </main>
       )}
 
-      <dialog ref={addMealDialogRef} className="meal-dialog add-meal-dialog" onClose={closeAddMeal} onKeyDown={handleAddMealDialogKeyDown} onPointerDown={(event) => { addMealBackdropPressRef.current = event.target === event.currentTarget; }} onClick={(event) => { const closeFromBackdrop = shouldCloseFromBackdrop(event.target === event.currentTarget, addMealBackdropPressRef.current); addMealBackdropPressRef.current = false; if (closeFromBackdrop) closeAddMeal(); }}><div className="dialog-topline"><div><p className="eyebrow">NEW RECIPE</p><h2>Add a meal</h2></div><button className="dialog-close" onClick={closeAddMeal} aria-label="Close add meal dialog">×</button></div><form className="add-meal-form" onSubmit={(event) => void submitNewMeal(event)} autoComplete="off"><label>Meal name<input name="meal-title" value={newMealName} onChange={(event) => setNewMealName(event.target.value)} maxLength={100} placeholder="e.g. Lemon Chicken" autoComplete="off" autoCorrect="off" spellCheck={false} required autoFocus /></label><ThemeCombobox name="theme" value={newMealTheme} onChange={setNewMealTheme} options={suggestedThemes} /><p className="add-meal-error" role="alert">{addMealError}</p><button className="add-meal-submit" type="submit" disabled={addingMeal}>{addingMeal ? "Adding…" : "Add meal"}</button></form></dialog>
+      <dialog ref={addMealDialogRef} className="meal-dialog add-meal-dialog" onClose={closeAddMeal} onKeyDown={handleAddMealDialogKeyDown} onPointerDown={(event) => { addMealBackdropPressRef.current = event.target === event.currentTarget; }} onClick={(event) => { const closeFromBackdrop = shouldCloseFromBackdrop(event.target === event.currentTarget, addMealBackdropPressRef.current); addMealBackdropPressRef.current = false; if (closeFromBackdrop) closeAddMeal(); }}><div className="dialog-topline"><div><p className="eyebrow">NEW RECIPE</p><h2>Add a meal</h2></div><button className="dialog-close" onClick={closeAddMeal} aria-label="Close add meal dialog">×</button></div><form className="add-meal-form" onSubmit={(event) => void submitNewMeal(event)} autoComplete="off"><label>Meal name<input name="meal-title" value={newMealName} onChange={(event) => setNewMealName(event.target.value)} maxLength={100} placeholder="e.g. Lemon Chicken" autoComplete="off" autoCorrect="off" spellCheck={false} required autoFocus /></label><ThemeCombobox name="theme" value={newMealTheme} onChange={setNewMealTheme} options={suggestedThemes} /><p className="add-meal-error" role="alert">{addMealError}</p><button className="add-meal-submit" type="submit" disabled={addingMeal}>{addingMeal ? "Saving…" : "Save meal"}</button></form></dialog>
+
+      <dialog ref={deleteMealDialogRef} className="meal-dialog confirm-dialog" aria-labelledby="delete-meal-title" onCancel={(event) => { event.preventDefault(); closeDeleteMeal(); }} onClose={() => { if (!deletingMeal) setMealPendingDelete(null); }} onPointerDown={(event) => { deleteMealBackdropPressRef.current = event.target === event.currentTarget; }} onClick={(event) => { const closeFromBackdrop = shouldCloseFromBackdrop(event.target === event.currentTarget, deleteMealBackdropPressRef.current); deleteMealBackdropPressRef.current = false; if (closeFromBackdrop) closeDeleteMeal(); }}>{mealPendingDelete && <div className="confirm-dialog-content"><span className="confirm-dialog-mark" aria-hidden="true">!</span><p className="eyebrow">DELETE MEAL</p><h2 id="delete-meal-title">Are you sure?</h2><p className="confirm-dialog-copy"><strong>{mealPendingDelete.name}</strong> and all of its ingredients and meal history will be permanently removed.</p><p className="confirm-dialog-error" role="alert">{deleteMealError}</p><div className="confirm-dialog-actions"><button type="button" className="confirm-cancel" onClick={closeDeleteMeal} disabled={deletingMeal}>Keep meal</button><button type="button" className="confirm-delete" onClick={() => void confirmDeleteMeal()} disabled={deletingMeal}>{deletingMeal ? "Deleting…" : "Delete meal"}</button></div></div>}</dialog>
 
       <dialog ref={mealDialogRef} className="meal-dialog" onClose={() => setMealDialogOpen(false)} onPointerDown={(event) => { mealBackdropPressRef.current = event.target === event.currentTarget; }} onClick={(event) => { const closeFromBackdrop = shouldCloseFromBackdrop(event.target === event.currentTarget, mealBackdropPressRef.current); mealBackdropPressRef.current = false; if (closeFromBackdrop) setMealDialogOpen(false); }}>{activeMeal && <><div className="dialog-topline"><div className="dialog-title-block">{editingMealName ? <form className="meal-name-form" onSubmit={(event) => void saveMealName(event)} autoComplete="off"><input value={mealNameInput} onChange={(event) => setMealNameInput(event.target.value)} maxLength={100} aria-label="Meal name" autoComplete="off" autoCorrect="off" spellCheck={false} autoFocus /><ThemeCombobox compact value={mealThemeInput} onChange={setMealThemeInput} options={suggestedThemes} /><div className="meal-name-actions"><button type="submit" disabled={savingMealName}>{savingMealName ? "Saving…" : "Save changes"}</button><button type="button" disabled={savingMealName} onClick={() => { setMealNameInput(activeMeal.name); setMealThemeInput(activeMeal.theme); setMealNameError(""); setEditingMealName(false); }}>Cancel</button></div><p className="meal-name-error" role="alert">{mealNameError}</p></form> : <><p className="eyebrow">{activeMeal.theme}</p><div className="editable-meal-title"><h2>{activeMeal.name}</h2><button className="edit-meal-name" onClick={() => { setMealNameInput(activeMeal.name); setMealThemeInput(activeMeal.theme); setMealNameError(""); setEditingMealName(true); }}>Edit meal</button></div></>}</div><button className="dialog-close" onClick={() => setMealDialogOpen(false)} aria-label="Close meal details">×</button></div><button className={`dialog-week-button ${plannedKeys.has(mealKey(activeMeal.name)) ? "added" : ""}`} onClick={() => void (plannedKeys.has(mealKey(activeMeal.name)) ? removeMealFromWeek(activeMeal) : addMealToWeek(activeMeal))}>{plannedKeys.has(mealKey(activeMeal.name)) ? "✓ On This Week — Remove" : "+ Add to This Week"}</button><p className="dialog-intro">Ingredients</p><ul className="ingredient-list">{activeMeal.ingredients.length ? activeMeal.ingredients.map((ingredient, index) => { const pending = pendingIngredients.has(`${activeMeal.id}:${ingredient.toLocaleLowerCase()}`); return <li key={`${ingredient}-${index}`}>{editIngredient?.index === index ? <form className="ingredient-inline-form" onSubmit={(event) => void saveIngredientEdit(event)}><input className="ingredient-edit-input" value={editIngredient.value} onChange={(event) => setEditIngredient({ index, value: event.target.value })} maxLength={80} autoFocus /><div className="ingredient-actions"><button type="submit">Save</button><button type="button" onClick={() => setEditIngredient(null)}>Cancel</button></div></form> : <><span>{ingredient}</span>{pending ? <span className="ingredient-saving">Saving…</span> : <div className="ingredient-actions"><button onClick={() => setEditIngredient({ index, value: ingredient })}>Edit</button><button onClick={() => void removeIngredient(index)}>Remove</button></div>}</>}</li>; }) : <li className="empty-ingredients">No ingredients yet.</li>}</ul><form ref={ingredientFormRef} className="ingredient-form" onSubmit={(event) => void addIngredient(event)}><input ref={ingredientInputRef} value={ingredientInput} onChange={(event) => setIngredientInput(event.target.value)} maxLength={80} placeholder="Add an ingredient…" aria-label="New ingredient" required /><button type="submit">Add</button></form><p className="ingredient-message" role="status">{ingredientMessage}</p></>}</dialog>
     </div>

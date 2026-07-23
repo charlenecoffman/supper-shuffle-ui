@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DEFAULT_THEMES, filterThemeOptions, rankPantryItems, shouldCloseFromBackdrop } from "../src/uiLogic.js";
+import { DEFAULT_THEMES, filterThemeOptions, mergeThemeOptions, parseStoredGoogleSession, rankPantryItems, shouldCloseFromBackdrop } from "../src/uiLogic.js";
 
 test("the dropdown arrow can show every starter theme", () => {
   assert.deepEqual(filterThemeOptions(DEFAULT_THEMES, "", true), DEFAULT_THEMES);
@@ -15,6 +15,26 @@ test("typing opens only case-insensitive matching suggestions", () => {
 
 test("custom theme text remains valid when there are no suggestions", () => {
   assert.deepEqual(filterThemeOptions(DEFAULT_THEMES, "Moon Picnic", false), []);
+});
+
+test("custom themes remain available in future theme dropdowns", () => {
+  assert.deepEqual(
+    mergeThemeOptions(["Italian", "Southern"], ["southern", "Moon Picnic"]),
+    ["Italian", "Moon Picnic", "Southern"],
+  );
+});
+
+test("a valid unexpired Google session can be restored", () => {
+  assert.deepEqual(
+    parseStoredGoogleSession(JSON.stringify({ accessToken: "token-123", expiresAt: 5000 }), 1000),
+    { accessToken: "token-123", expiresAt: 5000 },
+  );
+});
+
+test("expired or malformed Google sessions are rejected", () => {
+  assert.equal(parseStoredGoogleSession(JSON.stringify({ accessToken: "token-123", expiresAt: 5000 }), 5000), null);
+  assert.equal(parseStoredGoogleSession(JSON.stringify({ accessToken: "", expiresAt: 9000 }), 1000), null);
+  assert.equal(parseStoredGoogleSession("not-json", 1000), null);
 });
 
 test("a modal closes only when the pointer press and click both occur on its backdrop", () => {

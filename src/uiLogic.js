@@ -13,6 +13,35 @@ export function filterThemeOptions(options, value, showAll) {
 }
 
 /**
+ * @param {...string[]} groups
+ * @returns {string[]}
+ */
+export function mergeThemeOptions(...groups) {
+  const themes = new Map();
+  for (const theme of groups.flat()) {
+    const value = theme.trim();
+    if (value && !themes.has(value.toLocaleLowerCase())) themes.set(value.toLocaleLowerCase(), value);
+  }
+  return [...themes.values()].sort((left, right) => left.localeCompare(right));
+}
+
+/**
+ * @param {string | null} rawValue
+ * @param {number} now
+ * @returns {{ accessToken: string, expiresAt: number } | null}
+ */
+export function parseStoredGoogleSession(rawValue, now = Date.now()) {
+  if (!rawValue) return null;
+  try {
+    const stored = JSON.parse(rawValue);
+    if (!stored || typeof stored.accessToken !== "string" || !stored.accessToken || typeof stored.expiresAt !== "number" || !Number.isFinite(stored.expiresAt) || stored.expiresAt <= now) return null;
+    return { accessToken: stored.accessToken, expiresAt: stored.expiresAt };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * @param {boolean} targetIsDialog
  * @param {boolean} pressStartedOnBackdrop
  * @returns {boolean}
