@@ -40,7 +40,7 @@ declare global {
 type MealRow = { id: string; name: string; theme: string };
 type IngredientRow = { id: string; mealId: string; ingredient: string };
 type HistoryRow = { id: string; week: string; mealId: string };
-type ShoppingRow = { id: string; week: string; ingredient: string; removed: boolean; manual: boolean };
+type ShoppingRow = { id: string; week: string; ingredient: string; removed: boolean; manual: boolean; shopped: boolean };
 type EssentialRow = { id: string; name: string };
 type AppData = {
   schemaVersion: 1;
@@ -248,7 +248,7 @@ function normalizeAppData(value: unknown): AppData {
     meals,
     ingredients: array("ingredients").filter(isRecord).map((item) => ({ id: stringValue(item.id), mealId: stringValue(item.mealId), ingredient: stringValue(item.ingredient) })).filter((item) => item.id && item.mealId && item.ingredient),
     history: array("history").filter(isRecord).map((item) => ({ id: stringValue(item.id), week: stringValue(item.week), mealId: stringValue(item.mealId) })).filter((item) => item.id && item.week && item.mealId),
-    shopping: array("shopping").filter(isRecord).map((item) => ({ id: stringValue(item.id), week: stringValue(item.week), ingredient: stringValue(item.ingredient), removed: Boolean(item.removed), manual: Boolean(item.manual) })).filter((item) => item.id && item.week && item.ingredient),
+    shopping: array("shopping").filter(isRecord).map((item) => ({ id: stringValue(item.id), week: stringValue(item.week), ingredient: stringValue(item.ingredient), removed: Boolean(item.removed), manual: Boolean(item.manual), shopped: Boolean(item.shopped) })).filter((item) => item.id && item.week && item.ingredient),
     essentials: array("essentials").filter(isRecord).map((item) => ({ id: stringValue(item.id), name: stringValue(item.name) })).filter((item) => item.id && item.name),
   };
 }
@@ -385,14 +385,14 @@ function shoppingPayload(data: AppData) {
     }
   }
   const saved = new Map(data.shopping.filter((item) => item.week === week.weekStart).map((item) => [canonical(item.ingredient), item]));
-  const items: Array<{ id: string; ingredient: string; quantity: string; meals: string[] }> = [];
+  const items: Array<{ id: string; ingredient: string; quantity: string; meals: string[]; shopped: boolean }> = [];
   for (const [key, item] of grouped) {
     if (saved.get(key)?.removed) continue;
-    items.push({ id: key, ingredient: item.ingredient, quantity: String(item.meals.length), meals: item.meals });
+    items.push({ id: key, ingredient: item.ingredient, quantity: String(item.meals.length), meals: item.meals, shopped: Boolean(saved.get(key)?.shopped) });
   }
   for (const [key, item] of saved) {
     if (grouped.has(key) || item.removed || !item.manual) continue;
-    items.push({ id: key, ingredient: item.ingredient, quantity: "1", meals: [] });
+    items.push({ id: key, ingredient: item.ingredient, quantity: "1", meals: [], shopped: item.shopped });
   }
   items.sort((left, right) => left.ingredient.localeCompare(right.ingredient));
   return { weekStart: week.weekStart, items, count: items.length };
@@ -498,13 +498,17 @@ async function mutateApi<T>(method: string, url: URL, parts: string[], options: 
     const ingredient = parts[2].trim();
     const week = currentWeekStart();
     const match = data.shopping.find((item) => item.week === week && canonical(item.ingredient) === canonical(ingredient));
+    const request = body(options);
+    const updatesShopped = method === "PATCH" && Object.prototype.hasOwnProperty.call(request, "shopped");
     const removed = method === "DELETE";
-    const manual = method === "PATCH" || Boolean(match?.manual);
+    const manual = updatesShopped ? Boolean(match?.manual) : method === "PATCH" || Boolean(match?.manual);
+    const shopped = updatesShopped ? Boolean(request.shopped) : false;
     if (match) {
       match.ingredient = ingredient;
       match.removed = removed;
       match.manual = manual;
-    } else data.shopping.push({ id: crypto.randomUUID(), week, ingredient, removed, manual });
+      match.shopped = shopped;
+    } else data.shopping.push({ id: crypto.randomUUID(), week, ingredient, removed, manual, shopped });
     await writeData(data);
     return { ok: true, ingredient } as T;
   }
