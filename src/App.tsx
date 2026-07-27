@@ -1,6 +1,7 @@
 import { FormEvent, KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { connectGoogle, googleApi as api, isGoogleConfigured, onGoogleAuthorizationExpired, restoreGoogleSession } from "./googleDrive";
 import { buildShoppingListPdf } from "./shoppingPdf";
+import { formatShoppingListText } from "./shoppingShare";
 import { filterThemeOptions, mergeThemeOptions, rankPantryItems, shouldCloseFromBackdrop } from "./uiLogic";
 
 type Meal = { id: string; name: string; theme: string; lastOrdered?: string };
@@ -611,6 +612,61 @@ function Home() {
     window.setTimeout(() => window.print(), 50);
   }
 
+  async function copyShoppingList(text: string) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // Fall back for browsers that expose Clipboard API but deny access.
+      }
+    }
+
+    const field = document.createElement("textarea");
+    field.value = text;
+    field.setAttribute("readonly", "");
+    field.style.position = "fixed";
+    field.style.opacity = "0";
+    document.body.appendChild(field);
+    field.select();
+    const copied = document.execCommand("copy");
+    field.remove();
+    if (!copied) throw new Error("Copying is not supported in this browser.");
+  }
+
+  async function shareShoppingList() {
+    const remainingItems = shopping.filter((item) => !item.shopped);
+    if (!remainingItems.length) return;
+
+    const weekLabel = formatWeek(weekStart);
+    const text = formatShoppingListText({ weekLabel, items: shopping });
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: `Supper Shuffle Shopping List — ${weekLabel}`,
+          text,
+        });
+        setShoppingMessage({ text: "Shopping list shared." });
+        return;
+      }
+
+      await copyShoppingList(text);
+      setShoppingMessage({ text: "Shopping list copied — paste it into a text message." });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setShoppingMessage({ text: "" });
+        return;
+      }
+
+      try {
+        await copyShoppingList(text);
+        setShoppingMessage({ text: "Shopping list copied — paste it into a text message." });
+      } catch {
+        setShoppingMessage({ text: "This browser could not share or copy your shopping list.", error: true });
+      }
+    }
+  }
+
   function downloadShoppingList() {
     const bytes = buildShoppingListPdf({ weekLabel: formatWeek(weekStart), items: shopping });
     const pdfBuffer = new ArrayBuffer(bytes.byteLength);
@@ -849,7 +905,7 @@ function Home() {
           <div className="my-week-layout">
             <aside className="planned-panel"><div className="panel-heading"><div><p className="eyebrow">DINNERS</p><h2>On the menu</h2></div><span>{planned.length}</span></div><div className="planned-meal-list">{planned.length ? planned.map((meal, index) => <div className="planned-meal" key={mealKey(meal.name)}><span>{index + 1}</span><div><p>{meal.theme}</p><strong>{meal.name}</strong></div><button onClick={() => void removeMealFromWeek(meal)} aria-label={`Remove ${meal.name}`}>×</button></div>) : <div className="week-page-empty"><strong>No meals selected yet</strong><span>Head back to Meals to start planning.</span></div>}</div></aside>
             <section className="shopping-panel">
-              <div className="panel-heading"><div><p className="eyebrow">SHOPPING LIST</p><h2>Everything you need</h2><p className="shopping-count-copy">{shopping.length} {shopping.length === 1 ? "item" : "items"} in cart</p></div><div className="shopping-heading-actions"><button className="shopping-icon-button print-button" onClick={printShoppingList} aria-label="Print shopping list" title="Print shopping list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M7 14h10v7H7z" /></svg></button><button className="shopping-icon-button download-button" onClick={downloadShoppingList} aria-label="Download shopping list as PDF" title="Download PDF"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 20h16" /></svg></button></div></div>
+              <div className="panel-heading"><div><p className="eyebrow">SHOPPING LIST</p><h2>Everything you need</h2><p className="shopping-count-copy">{shopping.length} {shopping.length === 1 ? "item" : "items"} in cart</p></div><div className="shopping-heading-actions"><button type="button" className="shopping-icon-button share-button" onClick={() => void shareShoppingList()} disabled={!shopping.some((item) => !item.shopped)} aria-label="Share shopping list" title={shopping.some((item) => !item.shopped) ? "Share shopping list" : "Everything is checked off"}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="m8.2 10.8 7.6-4.5M8.2 13.2l7.6 4.5" /></svg></button><button type="button" className="shopping-icon-button print-button" onClick={printShoppingList} aria-label="Print shopping list" title="Print shopping list"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M7 14h10v7H7z" /></svg></button><button type="button" className="shopping-icon-button download-button" onClick={downloadShoppingList} aria-label="Download shopping list as PDF" title="Download PDF"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 5-5m-5 5-5-5M4 20h16" /></svg></button></div></div>
               <div className="pantry-check"><div className="pantry-check-heading"><div><p className="eyebrow">PANTRY CHECK</p><p>Running low on something you usually keep around?</p></div><button type="button" className="pantry-manage-link" onClick={() => changeView("pantry")}>Go to My Pantry →</button></div><div className="pantry-quick-list" aria-live="polite">{frequentEssentials.length ? frequentEssentials.map((essential) => { const key = canonical(essential.name); const added = shopping.some((item) => canonical(item.ingredient) === key); const motionClass = pantryCheckLeavingKeys.has(key) ? " is-leaving" : pantryCheckEnteringKey === key ? " is-entering" : ""; return <div className={`pantry-quick-item${motionClass}`} key={essential.name}><span>{essential.name}</span><button type="button" className={added ? "added" : ""} disabled={added} onClick={() => void addEssential(essential)}>{added ? "On list" : "+ Add to list"}</button></div>; }) : <span className="pantry-quick-empty">Everything in your pantry is already on this week's list.</span>}</div></div>
               <form className="shopping-add-form" onSubmit={(event) => void addShoppingItem(event)}>
                 <input value={newShoppingItem} onChange={(event) => setNewShoppingItem(event.target.value)} placeholder="Add any other item…" aria-label="New shopping list item" maxLength={80} />

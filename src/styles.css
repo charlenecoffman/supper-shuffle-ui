@@ -158,6 +158,8 @@ h2 { font-size: clamp(40px, 4vw, 54px); line-height: 1; }
 .shopping-heading-actions { display: flex; align-items: center; gap: 9px; }
 .shopping-icon-button { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid #b9c4ba; background: transparent; color: var(--forest); }
 .shopping-icon-button:hover { border-color: var(--forest); background: #e9efe8; }
+.shopping-icon-button:disabled { cursor: not-allowed; opacity: .38; }
+.shopping-icon-button:disabled:hover { border-color: #b9c4ba; background: transparent; }
 .shopping-icon-button svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .planned-meal-list { padding: 8px 28px 22px; }
 .planned-meal { min-height: 72px; display: grid; grid-template-columns: 32px minmax(0, 1fr) 24px; gap: 12px; align-items: center; border-bottom: 1px dashed var(--line); }
@@ -388,6 +390,9 @@ h2 { font-size: clamp(40px, 4vw, 54px); line-height: 1; }
   .pantry-message { padding-left: 20px; padding-right: 20px; }
   .idea-strip { margin: 0 20px 48px; padding: 28px; grid-template-columns: auto 1fr; }
   .idea-strip button { grid-column: 1 / -1; }
+}
+@media (max-width: 380px) {
+  .shopping-panel .panel-heading { align-items: flex-start; flex-direction: column; }
 }
 
 @media print {
