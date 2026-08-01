@@ -423,6 +423,7 @@ h2 { font-size: clamp(40px, 4vw, 54px); line-height: 1; }
   body.printing-weekly-menu .planned-panel { display: block !important; border: 0; box-shadow: none; }
   body.printing-weekly-menu .planned-panel .panel-heading { min-height: 0; padding: 0 0 18px; }
   body.printing-weekly-menu .planned-panel .panel-heading h2 { font-size: 34px; }
+  body.printing-weekly-menu .planned-heading-actions button { display: none; }
   body.printing-weekly-menu .planned-meal-list { padding: 0; }
   body.printing-weekly-menu .planned-meal { min-height: 58px; grid-template-columns: 22px minmax(0, 1fr); break-inside: avoid; }
   body.printing-weekly-menu .planned-meal button { display: none; }
