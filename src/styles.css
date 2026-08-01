@@ -153,9 +153,9 @@ h2 { font-size: clamp(40px, 4vw, 54px); line-height: 1; }
 .panel-heading { min-height: 108px; padding: 25px 28px 20px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; align-items: center; gap: 20px; }
 .panel-heading .eyebrow { margin-bottom: 8px; }
 .panel-heading h2 { font-size: 32px; }
-.panel-heading > span { width: 44px; height: 44px; flex: 0 0 auto; border-radius: 50%; display: grid; place-items: center; background: #e9efe8; color: var(--forest); font-size: 12px; font-weight: 800; }
+.panel-heading > span, .planned-heading-actions > span { width: 44px; height: 44px; flex: 0 0 auto; border-radius: 50%; display: grid; place-items: center; background: #e9efe8; color: var(--forest); font-size: 12px; font-weight: 800; }
 .shopping-count-copy { margin: 8px 0 0; color: #748078; font-size: 11px; font-weight: 650; }
-.shopping-heading-actions { display: flex; align-items: center; gap: 9px; }
+.planned-heading-actions, .shopping-heading-actions { display: flex; align-items: center; gap: 9px; }
 .shopping-icon-button { width: 42px; height: 42px; display: grid; place-items: center; border: 1px solid #b9c4ba; background: transparent; color: var(--forest); }
 .shopping-icon-button:hover { border-color: var(--forest); background: #e9efe8; }
 .shopping-icon-button:disabled { cursor: not-allowed; opacity: .38; }
@@ -225,6 +225,11 @@ h2 { font-size: clamp(40px, 4vw, 54px); line-height: 1; }
 .shopping-item > button { border: 0; background: transparent; color: #a05f50; padding: 6px 0; font-size: 10px; font-weight: 750; }
 .shopping-message { min-height: 34px; margin: 0; padding: 8px 28px 14px; color: #61766a; font-size: 10px; }
 .shopping-message.error { color: #a34f42; }
+.shopping-list-tools { display: flex; align-items: center; gap: 18px; padding: 0 28px; border-bottom: 1px solid var(--line); background: var(--paper); }
+.shopping-list-tools .shopping-search { flex: 1; min-width: 0; padding-left: 0; padding-right: 0; border-bottom: 0; }
+.show-checked-toggle { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 10px 0; color: #65736a; font-size: 10px; font-weight: 800; white-space: nowrap; cursor: pointer; }
+.show-checked-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--forest); }
+.show-checked-toggle:focus-within { outline: 3px solid rgba(53, 87, 65, .16); outline-offset: 3px; }
 .pantry-page { min-height: calc(100vh - 78px); background: var(--cream); background-image: radial-gradient(#d7cdb9 1px, transparent 1px); background-size: 24px 24px; }
 .pantry-hero { padding: 70px clamp(24px, 8vw, 126px); display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 430px); align-items: end; gap: 70px; }
 .pantry-hero h1 { font-size: clamp(54px, 6vw, 76px); }
@@ -398,7 +403,7 @@ h2 { font-size: clamp(40px, 4vw, 54px); line-height: 1; }
 @media print {
   @page { margin: .55in; }
   body { background: white; color: #111; }
-  .topbar, .my-week-heading, .planned-panel, .pantry-check, .shopping-add-form, .shopping-search, .shopping-message, .shopping-heading-actions, .shopping-item > button { display: none !important; }
+  .topbar, .my-week-heading, .planned-panel, .pantry-check, .shopping-add-form, .shopping-list-tools, .shopping-search, .shopping-message, .shopping-heading-actions, .shopping-item > button { display: none !important; }
   .my-week-page { min-height: 0; padding: 0; background: white; }
   .my-week-layout { display: block; }
   .shopping-panel { border: 0; box-shadow: none; }
@@ -409,6 +414,18 @@ h2 { font-size: clamp(40px, 4vw, 54px); line-height: 1; }
   .shopping-copy strong { color: #111; }
   .shopping-copy span { color: #555; }
   .shopping-quantity strong { border-color: #bbb; background: white; }
+
+  body.printing-weekly-menu .topbar,
+  body.printing-weekly-menu .my-week-heading,
+  body.printing-weekly-menu .shopping-panel { display: none !important; }
+  body.printing-weekly-menu .my-week-page { min-height: 0; padding: 0; background: white; }
+  body.printing-weekly-menu .my-week-layout { display: block; }
+  body.printing-weekly-menu .planned-panel { display: block !important; border: 0; box-shadow: none; }
+  body.printing-weekly-menu .planned-panel .panel-heading { min-height: 0; padding: 0 0 18px; }
+  body.printing-weekly-menu .planned-panel .panel-heading h2 { font-size: 34px; }
+  body.printing-weekly-menu .planned-meal-list { padding: 0; }
+  body.printing-weekly-menu .planned-meal { min-height: 58px; grid-template-columns: 22px minmax(0, 1fr); break-inside: avoid; }
+  body.printing-weekly-menu .planned-meal button { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
