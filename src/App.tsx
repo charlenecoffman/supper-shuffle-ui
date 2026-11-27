@@ -208,6 +208,7 @@ function Home() {
   const [newShoppingItem, setNewShoppingItem] = useState("");
   const [addingShoppingItem, setAddingShoppingItem] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [startingNewWeek, setStartingNewWeek] = useState(false);
   const [weekMessage, setWeekMessage] = useState<Message>({ text: "" });
   const [shoppingMessage, setShoppingMessage] = useState<Message>({ text: "" });
   const [pantryMessage, setPantryMessage] = useState<Message>({ text: "" });
@@ -339,6 +340,23 @@ function Home() {
       setShoppingMessage({ text: "" });
     } catch (error) {
       setShoppingMessage({ text: (error as Error).message, error: true });
+    }
+  }
+
+  async function startNewWeek() {
+    if (startingNewWeek) return;
+    const confirmed = window.confirm("Start a new week? Your current meals and shopping list will be saved, and a fresh week will be created.");
+    if (!confirmed) return;
+
+    setStartingNewWeek(true);
+    try {
+      await api<WeekPayload>("/api/week/new", { method: "POST" });
+      await loadMyWeek();
+      setShoppingMessage({ text: "New week started. Your previous week's meals and shopping list are saved." });
+    } catch (error) {
+      setShoppingMessage({ text: (error as Error).message, error: true });
+    } finally {
+      setStartingNewWeek(false);
     }
   }
 
@@ -912,7 +930,7 @@ function Home() {
         </main>
       ) : view === "week" ? (
         <main className="my-week-page">
-          <div className="my-week-heading"><h1>My week</h1><p className="my-week-heading-date">Week of {formatWeek(weekStart)}</p><button className="back-to-meals" onClick={() => changeView("meals")}>← Go back to add more meals</button></div>
+          <div className="my-week-heading"><h1>My week</h1><p className="my-week-heading-date">Week of {formatWeek(weekStart)}</p><button type="button" className="start-new-week" onClick={() => void startNewWeek()} disabled={startingNewWeek}>{startingNewWeek ? "Starting…" : "Start a New Week"}</button><button className="back-to-meals" onClick={() => changeView("meals")}>← Go back to add more meals</button></div>
           <div className="my-week-layout">
             <aside className="planned-panel"><div className="panel-heading"><div><p className="eyebrow">DINNERS</p><h2>On the menu</h2></div><div className="planned-heading-actions"><span>{planned.length}</span><button type="button" className="shopping-icon-button" onClick={printWeeklyMenu} aria-label="Print weekly menu" title="Print weekly menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 8V3h10v5M7 17H5a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5h-2M7 14h10v7H7z" /></svg></button></div></div><div className="planned-meal-list">{planned.length ? planned.map((meal, index) => <div className="planned-meal" key={mealKey(meal.name)}><span>{index + 1}</span><div><p>{meal.theme}</p><strong>{meal.name}</strong></div><button onClick={() => void removeMealFromWeek(meal)} aria-label={`Remove ${meal.name}`}>×</button></div>) : <div className="week-page-empty"><strong>No meals selected yet</strong><span>Head back to Meals to start planning.</span></div>}</div></aside>
             <section className="shopping-panel">

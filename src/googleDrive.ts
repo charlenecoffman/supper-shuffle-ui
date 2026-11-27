@@ -39,13 +39,15 @@ declare global {
 
 type MealRow = { id: string; name: string; theme: string };
 type IngredientRow = { id: string; mealId: string; ingredient: string };
-type HistoryRow = { id: string; week: string; mealId: string };
-type ShoppingRow = { id: string; week: string; ingredient: string; removed: boolean; manual: boolean; shopped: boolean };
+type HistoryRow = { id: string; week: string; weekStart?: string; mealId: string };
+type ShoppingRow = { id: string; week: string; weekStart?: string; ingredient: string; removed: boolean; manual: boolean; shopped: boolean };
 type EssentialRow = { id: string; name: string };
 type AppData = {
   schemaVersion: 1;
   weekStartsOn: "Saturday";
   timeZone: "America/Chicago";
+  activeWeekId: string;
+  activeWeekStart: string;
   themes: string[];
   meals: MealRow[];
   ingredients: IngredientRow[];
@@ -217,6 +219,8 @@ function emptyAppData(): AppData {
     schemaVersion: 1,
     weekStartsOn: "Saturday",
     timeZone: "America/Chicago",
+    activeWeekId: currentWeekStart(),
+    activeWeekStart: currentWeekStart(),
     themes: [...DEFAULT_THEMES],
     meals: [],
     ingredients: [],
@@ -244,11 +248,13 @@ function normalizeAppData(value: unknown): AppData {
     schemaVersion: 1,
     weekStartsOn: "Saturday",
     timeZone: "America/Chicago",
+    activeWeekId: stringValue(value.activeWeekId) || currentWeekStart(),
+    activeWeekStart: stringValue(value.activeWeekStart) || currentWeekStart(),
     themes,
     meals,
     ingredients: array("ingredients").filter(isRecord).map((item) => ({ id: stringValue(item.id), mealId: stringValue(item.mealId), ingredient: stringValue(item.ingredient) })).filter((item) => item.id && item.mealId && item.ingredient),
-    history: array("history").filter(isRecord).map((item) => ({ id: stringValue(item.id), week: stringValue(item.week), mealId: stringValue(item.mealId) })).filter((item) => item.id && item.week && item.mealId),
-    shopping: array("shopping").filter(isRecord).map((item) => ({ id: stringValue(item.id), week: stringValue(item.week), ingredient: stringValue(item.ingredient), removed: Boolean(item.removed), manual: Boolean(item.manual), shopped: Boolean(item.shopped) })).filter((item) => item.id && item.week && item.ingredient),
+    history: array("history").filter(isRecord).map((item) => ({ id: stringValue(item.id), week: stringValue(item.week), weekStart: stringValue(item.weekStart) || stringValue(item.week), mealId: stringValue(item.mealId) })).filter((item) => item.id && item.week && item.mealId),
+    shopping: array("shopping").filter(isRecord).map((item) => ({ id: stringValue(item.id), week: stringValue(item.week), weekStart: stringValue(item.weekStart) || stringValue(item.week), ingredient: stringValue(item.ingredient), removed: Boolean(item.removed), manual: Boolean(item.manual), shopped: Boolean(item.shopped) })).filter((item) => item.id && item.week && item.ingredient),
     essentials: array("essentials").filter(isRecord).map((item) => ({ id: stringValue(item.id), name: stringValue(item.name) })).filter((item) => item.id && item.name),
   };
 }
@@ -352,7 +358,7 @@ function historyDate(date: Date) {
 function mealsPayload(data: AppData) {
   const lastOrdered = new Map<string, Date>();
   for (const history of data.history) {
-    const date = parseDate(history.week);
+    const date = parseDate(history.weekStart || history.week);
     if (!date) continue;
     const prior = lastOrdered.get(history.mealId);
     if (!prior || date > prior) lastOrdered.set(history.mealId, date);
@@ -367,8 +373,8 @@ function mealDetail(data: AppData, mealId: string) {
 }
 
 function weekPayload(data: AppData) {
-  const weekStart = currentWeekStart();
-  const selected = new Set(data.history.filter((item) => item.week === weekStart).map((item) => item.mealId));
+  const weekStart = data.activeWeekStart;
+  const selected = new Set(data.history.filter((item) => item.week === data.activeWeekId).map((item) => item.mealId));
   const meals = mealsPayload(data).filter((meal) => selected.has(meal.id));
   return { weekStart, meals, count: meals.length };
 }
@@ -384,7 +390,7 @@ function shoppingPayload(data: AppData) {
       grouped.set(key, entry);
     }
   }
-  const saved = new Map(data.shopping.filter((item) => item.week === week.weekStart).map((item) => [canonical(item.ingredient), item]));
+  const saved = new Map(data.shopping.filter((item) => item.week === data.activeWeekId).map((item) => [canonical(item.ingredient), item]));
   const items: Array<{ id: string; ingredient: string; quantity: string; meals: string[]; shopped: boolean }> = [];
   for (const [key, item] of grouped) {
     if (saved.get(key)?.removed) continue;
@@ -458,16 +464,22 @@ async function mutateApi<T>(method: string, url: URL, parts: string[], options: 
     await writeData(data);
     return { meal: mealDetail(data, meal.id) } as T;
   }
+  if (method === "POST" && url.pathname === "/api/week/new") {
+    data.activeWeekId = crypto.randomUUID();
+    data.activeWeekStart = historyDate(chicagoToday());
+    await writeData(data);
+    return weekPayload(data) as T;
+  }
   if (method === "POST" && url.pathname === "/api/week") {
     const mealId = String(body(options).mealId || "");
     if (!data.meals.some((meal) => meal.id === mealId)) throw new Error("Meal not found.");
-    const weekStart = currentWeekStart();
-    if (!data.history.some((item) => item.week === weekStart && item.mealId === mealId)) data.history.push({ id: crypto.randomUUID(), week: weekStart, mealId });
+    const weekId = data.activeWeekId;
+    if (!data.history.some((item) => item.week === weekId && item.mealId === mealId)) data.history.push({ id: crypto.randomUUID(), week: weekId, weekStart: data.activeWeekStart, mealId });
     await writeData(data);
     return weekPayload(data) as T;
   }
   if (method === "DELETE" && parts.length === 3 && parts[0] === "api" && parts[1] === "week") {
-    const index = data.history.findIndex((item) => item.week === currentWeekStart() && item.mealId === parts[2]);
+    const index = data.history.findIndex((item) => item.week === data.activeWeekId && item.mealId === parts[2]);
     if (index >= 0) data.history.splice(index, 1);
     await writeData(data);
     return weekPayload(data) as T;
@@ -496,7 +508,7 @@ async function mutateApi<T>(method: string, url: URL, parts: string[], options: 
   }
   if (["PATCH", "DELETE"].includes(method) && parts.length === 3 && parts[0] === "api" && parts[1] === "shopping-list") {
     const ingredient = parts[2].trim();
-    const week = currentWeekStart();
+    const week = data.activeWeekId;
     const match = data.shopping.find((item) => item.week === week && canonical(item.ingredient) === canonical(ingredient));
     const request = body(options);
     const updatesShopped = method === "PATCH" && Object.prototype.hasOwnProperty.call(request, "shopped");
@@ -505,10 +517,11 @@ async function mutateApi<T>(method: string, url: URL, parts: string[], options: 
     const shopped = updatesShopped ? Boolean(request.shopped) : false;
     if (match) {
       match.ingredient = ingredient;
+      match.weekStart = data.activeWeekStart;
       match.removed = removed;
       match.manual = manual;
       match.shopped = shopped;
-    } else data.shopping.push({ id: crypto.randomUUID(), week, ingredient, removed, manual, shopped });
+    } else data.shopping.push({ id: crypto.randomUUID(), week, weekStart: data.activeWeekStart, ingredient, removed, manual, shopped });
     await writeData(data);
     return { ok: true, ingredient } as T;
   }
